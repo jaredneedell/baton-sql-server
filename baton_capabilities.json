@@ -29,7 +29,7 @@
         "id":  "group",
         "displayName":  "Group",
         "traits":  [
-          "TRAIT_USER"
+          "TRAIT_GROUP"
         ]
       },
       "capabilities":  [
