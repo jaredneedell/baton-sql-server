@@ -10,6 +10,7 @@ import (
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	_ "github.com/conductorone/baton-sdk/pkg/annotations"
+	bid "github.com/conductorone/baton-sdk/pkg/bid"
 	"github.com/conductorone/baton-sdk/pkg/pagination"
 	enTypes "github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	grTypes "github.com/conductorone/baton-sdk/pkg/types/grant"
@@ -62,7 +63,7 @@ func (d *serverRolePrincipalSyncer) Entitlements(ctx context.Context, resource *
 	ret = append(ret, enTypes.NewAssignmentEntitlement(
 		resource,
 		"member",
-		enTypes.WithGrantableTo(resourceTypeUser),
+		enTypes.WithGrantableTo(resourceTypeUser, resourceTypeGroup, resourceTypeServerRole),
 	))
 
 	return ret, "", nil, nil
@@ -178,7 +179,12 @@ func (d *serverRolePrincipalSyncer) Grants(ctx context.Context, resource *v2.Res
 				return nil, "", nil, err
 			}
 
-			ret = append(ret, grTypes.NewGrant(resource, "member", principalID))
+			grantOpts, err := BuildBatonIDGrantOptions(principalID, principal.Type, principal.Name)
+			if err != nil {
+				return nil, "", nil, err
+			}
+
+			ret = append(ret, grTypes.NewGrant(resource, "member", principalID, grantOpts...))
 		}
 
 		visited[b.ResourceID()] = true
@@ -193,6 +199,45 @@ func (d *serverRolePrincipalSyncer) Grants(ctx context.Context, resource *v2.Res
 	}
 
 	return ret, npt, nil, nil
+}
+
+func BuildBatonIDGrantOptions(principalID *v2.ResourceId, principalType string, principalName string) ([]grTypes.GrantOption, error) {
+	grantOpts := []grTypes.GrantOption{}
+
+	switch principalType {
+	case "G": // Configure BatonID matching for Active Directory groups
+		gr := &v2.Resource{
+			Id: principalID,
+		}
+
+		ent := enTypes.NewAssignmentEntitlement(gr, "member")
+		bidEnt, err := bid.MakeBid(ent)
+		if err != nil {
+			return nil, err
+		}
+
+		grantOpts = append(grantOpts,
+			grTypes.WithAnnotation(&v2.ExternalResourceMatch{
+				ResourceType: v2.ResourceType_TRAIT_GROUP,
+				Key:          "downlevel_logon_name",
+				Value:        principalName,
+			}),
+			grTypes.WithAnnotation(&v2.GrantExpandable{
+				EntitlementIds: []string{bidEnt},
+				Shallow:        true,
+			}),
+		)
+	case "U": // Configure BatonID matching for Active Directory users
+		grantOpts = append(grantOpts,
+			grTypes.WithAnnotation(&v2.ExternalResourceMatch{
+				ResourceType: v2.ResourceType_TRAIT_USER,
+				Key:          "downlevel_logon_name",
+				Value:        principalName,
+			}),
+		)
+	}
+
+	return grantOpts, nil
 }
 
 func (d *serverRolePrincipalSyncer) Grant(ctx context.Context, resource *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {

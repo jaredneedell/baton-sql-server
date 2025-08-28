@@ -74,7 +74,8 @@ func (d *databaseRolePrincipalSyncer) List(ctx context.Context, parentResourceID
 func (d *databaseRolePrincipalSyncer) Entitlements(ctx context.Context, resource *v2.Resource, pToken *pagination.Token) ([]*v2.Entitlement, string, annotations.Annotations, error) {
 	var ret []*v2.Entitlement
 
-	ret = append(ret, enTypes.NewAssignmentEntitlement(resource, "member"))
+	grantableTo := enTypes.WithGrantableTo(resourceTypeUser, resourceTypeGroup, resourceTypeDatabaseRole)
+	ret = append(ret, enTypes.NewAssignmentEntitlement(resource, "member", grantableTo))
 
 	return ret, "", nil, nil
 }
@@ -216,7 +217,12 @@ func (d *databaseRolePrincipalSyncer) Grants(
 				return nil, "", nil, fmt.Errorf("invalid state: principalID is nil")
 			}
 
-			ret = append(ret, grTypes.NewGrant(resource, "member", principalID))
+			grantOpts, err := BuildBatonIDGrantOptions(principalID, dbPrincipal.Type, dbPrincipal.Name)
+			if err != nil {
+				return nil, "", nil, err
+			}
+
+			ret = append(ret, grTypes.NewGrant(resource, "member", principalID, grantOpts...))
 		}
 
 		visited[b.ResourceID()] = true
