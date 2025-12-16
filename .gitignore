@@ -5,6 +5,7 @@
 *.so
 *.dylib
 *.c1z
+baton-sql-server
 
 # Test binary, built with `go test -c`
 *.test

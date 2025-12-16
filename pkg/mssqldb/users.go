@@ -353,6 +353,273 @@ CREATE USER [%s] FOR LOGIN [%s];
 	return nil
 }
 
+// UserHasRemainingPermissions checks if a user has any remaining permissions, roles, or grants.
+// Returns true if the user has any permissions, false otherwise.
+func (c *Client) UserHasRemainingPermissions(ctx context.Context, principalID string) (bool, error) {
+	l := ctxzap.Extract(ctx)
+	l.Debug("checking if user has remaining permissions", zap.String("principal_id", principalID))
+
+	// Check server-level permissions (excluding COSQ - Connect SQL, which can be ignored)
+	var serverPermCount int
+	query := `
+	SELECT COUNT(*) 
+	FROM sys.server_permissions 
+	WHERE grantee_principal_id = @p1 
+	AND (state = 'G' OR state = 'W')
+	AND type != 'COSQ'
+	`
+	err := c.db.GetContext(ctx, &serverPermCount, query, principalID)
+	if err != nil {
+		return false, fmt.Errorf("failed to check server permissions: %w", err)
+	}
+	if serverPermCount > 0 {
+		l.Debug("user has server permissions", zap.Int("count", serverPermCount))
+		return true, nil
+	}
+
+	// Check server role memberships
+	var serverRoleCount int
+	query = `
+	SELECT COUNT(*) 
+	FROM sys.server_role_members 
+	WHERE member_principal_id = @p1
+	`
+	err = c.db.GetContext(ctx, &serverRoleCount, query, principalID)
+	if err != nil {
+		return false, fmt.Errorf("failed to check server role memberships: %w", err)
+	}
+	if serverRoleCount > 0 {
+		l.Debug("user has server role memberships", zap.Int("count", serverRoleCount))
+		return true, nil
+	}
+
+	// Check database-level permissions and role memberships across all databases
+	// Get list of all databases
+	databases, _, err := c.ListDatabases(ctx, &Pager{Size: 1000})
+	if err != nil {
+		return false, fmt.Errorf("failed to list databases: %w", err)
+	}
+
+	for _, db := range databases {
+		if c.skipUnavailableDatabases && db.StateDesc != "ONLINE" {
+			continue
+		}
+
+		// Check if user exists in this database
+		var dbPrincipalID int64
+		query = fmt.Sprintf(`
+		SELECT principal_id 
+		FROM [%s].sys.database_principals 
+		WHERE sid = (SELECT sid FROM sys.server_principals WHERE principal_id = @p1)
+		AND type IN ('S', 'U', 'C', 'E', 'K')
+		`, db.Name)
+		err = c.db.GetContext(ctx, &dbPrincipalID, query, principalID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			l.Warn("error checking database principal", zap.String("database", db.Name), zap.Error(err))
+			continue
+		}
+
+		// Check database-level permissions
+		var dbPermCount int
+		query = fmt.Sprintf(`
+		SELECT COUNT(*) 
+		FROM [%s].sys.database_permissions 
+		WHERE grantee_principal_id = @p1 AND (state = 'G' OR state = 'W')
+		`, db.Name)
+		err = c.db.GetContext(ctx, &dbPermCount, query, dbPrincipalID)
+		if err != nil {
+			l.Warn("error checking database permissions", zap.String("database", db.Name), zap.Error(err))
+			continue
+		}
+		if dbPermCount > 0 {
+			l.Debug("user has database permissions", zap.String("database", db.Name), zap.Int("count", dbPermCount))
+			return true, nil
+		}
+
+		// Check database role memberships
+		var dbRoleCount int
+		query = fmt.Sprintf(`
+		SELECT COUNT(*) 
+		FROM [%s].sys.database_role_members 
+		WHERE member_principal_id = @p1
+		`, db.Name)
+		err = c.db.GetContext(ctx, &dbRoleCount, query, dbPrincipalID)
+		if err != nil {
+			l.Warn("error checking database role memberships", zap.String("database", db.Name), zap.Error(err))
+			continue
+		}
+		if dbRoleCount > 0 {
+			l.Debug("user has database role memberships", zap.String("database", db.Name), zap.Int("count", dbRoleCount))
+			return true, nil
+		}
+	}
+
+	l.Debug("user has no remaining permissions", zap.String("principal_id", principalID))
+	return false, nil
+}
+
+// UserPermissionDetails contains detailed information about a user's permissions
+type UserPermissionDetails struct {
+	PrincipalID           string
+	PrincipalName         string
+	ServerPermissions     []string
+	ServerRoles           []string
+	DatabasePermissions   map[string][]string // database name -> permissions
+	DatabaseRoles         map[string][]string // database name -> roles
+}
+
+// GetUserPermissionDetails returns detailed information about what permissions a user has
+func (c *Client) GetUserPermissionDetails(ctx context.Context, principalID string) (*UserPermissionDetails, error) {
+	l := ctxzap.Extract(ctx)
+	l.Debug("getting detailed permission information", zap.String("principal_id", principalID))
+
+	// Get user info
+	user, err := c.GetUserPrincipal(ctx, principalID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user: %w", err)
+	}
+
+	details := &UserPermissionDetails{
+		PrincipalID:         principalID,
+		PrincipalName:        user.Name,
+		ServerPermissions:   []string{},
+		ServerRoles:          []string{},
+		DatabasePermissions: make(map[string][]string),
+		DatabaseRoles:        make(map[string][]string),
+	}
+
+		// Get server-level permissions (excluding COSQ - Connect SQL, which can be ignored)
+	query := `
+	SELECT perms.type, perms.state
+	FROM sys.server_permissions perms
+	WHERE perms.grantee_principal_id = @p1 
+	AND (perms.state = 'G' OR perms.state = 'W')
+	AND perms.type != 'COSQ'
+	`
+	rows, err := c.db.QueryxContext(ctx, query, principalID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query server permissions: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var permType, state string
+		if err := rows.Scan(&permType, &state); err != nil {
+			continue
+		}
+		permStr := permType
+		if state == "W" {
+			permStr += " (WITH GRANT)"
+		}
+		details.ServerPermissions = append(details.ServerPermissions, permStr)
+	}
+
+	// Get server role memberships
+	query = `
+	SELECT r.name
+	FROM sys.server_role_members rm
+	JOIN sys.server_principals r ON rm.role_principal_id = r.principal_id
+	WHERE rm.member_principal_id = @p1
+	`
+	rows, err = c.db.QueryxContext(ctx, query, principalID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query server roles: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var roleName string
+		if err := rows.Scan(&roleName); err != nil {
+			continue
+		}
+		details.ServerRoles = append(details.ServerRoles, roleName)
+	}
+
+	// Check database-level permissions and role memberships across all databases
+	databases, _, err := c.ListDatabases(ctx, &Pager{Size: 1000})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list databases: %w", err)
+	}
+
+	for _, db := range databases {
+		if c.skipUnavailableDatabases && db.StateDesc != "ONLINE" {
+			continue
+		}
+
+		// Check if user exists in this database
+		var dbPrincipalID int64
+		query = fmt.Sprintf(`
+		SELECT principal_id 
+		FROM [%s].sys.database_principals 
+		WHERE sid = (SELECT sid FROM sys.server_principals WHERE principal_id = @p1)
+		AND type IN ('S', 'U', 'C', 'E', 'K')
+		`, db.Name)
+		err = c.db.GetContext(ctx, &dbPrincipalID, query, principalID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			l.Warn("error checking database principal", zap.String("database", db.Name), zap.Error(err))
+			continue
+		}
+
+		// Get database-level permissions
+		query = fmt.Sprintf(`
+		SELECT perms.type, perms.state
+		FROM [%s].sys.database_permissions perms
+		WHERE perms.grantee_principal_id = @p1 AND (perms.state = 'G' OR perms.state = 'W')
+		AND perms.class = 0 AND perms.major_id = 0
+		`, db.Name)
+		rows, err = c.db.QueryxContext(ctx, query, dbPrincipalID)
+		if err == nil {
+			var dbPerms []string
+			for rows.Next() {
+				var permType, state string
+				if err := rows.Scan(&permType, &state); err != nil {
+					continue
+				}
+				permStr := permType
+				if state == "W" {
+					permStr += " (WITH GRANT)"
+				}
+				dbPerms = append(dbPerms, permStr)
+			}
+			rows.Close()
+			if len(dbPerms) > 0 {
+				details.DatabasePermissions[db.Name] = dbPerms
+			}
+		}
+
+		// Get database role memberships
+		query = fmt.Sprintf(`
+		SELECT r.name
+		FROM [%s].sys.database_role_members rm
+		JOIN [%s].sys.database_principals r ON rm.role_principal_id = r.principal_id
+		WHERE rm.member_principal_id = @p1
+		`, db.Name, db.Name)
+		rows, err = c.db.QueryxContext(ctx, query, dbPrincipalID)
+		if err == nil {
+			var dbRoles []string
+			for rows.Next() {
+				var roleName string
+				if err := rows.Scan(&roleName); err != nil {
+					continue
+				}
+				dbRoles = append(dbRoles, roleName)
+			}
+			rows.Close()
+			if len(dbRoles) > 0 {
+				details.DatabaseRoles[db.Name] = dbRoles
+			}
+		}
+	}
+
+	return details, nil
+}
+
 // LoginType represents the SQL Server login type.
 type LoginType string
 

@@ -20,8 +20,9 @@ import (
 )
 
 type databaseSyncer struct {
-	resourceType *v2.ResourceType
-	client       *mssqldb.Client
+	resourceType            *v2.ResourceType
+	client                  *mssqldb.Client
+	autoDeleteOrphanedLogins bool
 }
 
 func (d *databaseSyncer) ResourceType(ctx context.Context) *v2.ResourceType {
@@ -261,13 +262,43 @@ func (d *databaseSyncer) Revoke(ctx context.Context, grant *v2.Grant) (annotatio
 		return nil, err
 	}
 
+	// Check if user has no remaining permissions and delete login if enabled
+	if d.autoDeleteOrphanedLogins {
+		hasPermissions, err := d.client.UserHasRemainingPermissions(ctx, grant.Principal.Id.Resource)
+		if err != nil {
+			l.Warn("failed to check remaining permissions, skipping auto-delete", zap.Error(err))
+		} else if !hasPermissions {
+			l.Info("user has no remaining permissions, deleting login", zap.String("user", user.Name))
+			err = d.client.DeleteUserFromServer(ctx, user.Name)
+			if err != nil {
+				l.Warn("failed to delete orphaned login", zap.String("user", user.Name), zap.Error(err))
+				// Don't fail the revoke operation if delete fails
+			}
+		} else {
+			// User still has permissions - log details for debugging
+			details, err := d.client.GetUserPermissionDetails(ctx, grant.Principal.Id.Resource)
+			if err != nil {
+				l.Warn("failed to get permission details for debugging", zap.Error(err))
+			} else {
+				l.Info("user still has permissions, not deleting",
+					zap.String("user", user.Name),
+					zap.Strings("server_permissions", details.ServerPermissions),
+					zap.Strings("server_roles", details.ServerRoles),
+					zap.Any("database_permissions", details.DatabasePermissions),
+					zap.Any("database_roles", details.DatabaseRoles),
+				)
+			}
+		}
+	}
+
 	l.Debug("revoked permission", zap.String("permission", permission), zap.String("user", user.Name), zap.String("database", database.Name))
 	return nil, nil
 }
 
-func newDatabaseSyncer(ctx context.Context, c *mssqldb.Client) *databaseSyncer {
+func newDatabaseSyncer(ctx context.Context, c *mssqldb.Client, autoDeleteOrphanedLogins bool) *databaseSyncer {
 	return &databaseSyncer{
-		resourceType: resourceTypeDatabase,
-		client:       c,
+		resourceType:            resourceTypeDatabase,
+		client:                  c,
+		autoDeleteOrphanedLogins: autoDeleteOrphanedLogins,
 	}
 }

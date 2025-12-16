@@ -22,8 +22,9 @@ import (
 )
 
 type databaseRolePrincipalSyncer struct {
-	resourceType *v2.ResourceType
-	client       *mssqldb.Client
+	resourceType            *v2.ResourceType
+	client                  *mssqldb.Client
+	autoDeleteOrphanedLogins bool
 }
 
 func (d *databaseRolePrincipalSyncer) ResourceType(ctx context.Context) *v2.ResourceType {
@@ -299,6 +300,7 @@ func (d *databaseRolePrincipalSyncer) Grant(ctx context.Context, resource *v2.Re
 }
 
 func (d *databaseRolePrincipalSyncer) Revoke(ctx context.Context, grant *v2.Grant) (annotations.Annotations, error) {
+	l := ctxzap.Extract(ctx)
 	userId := grant.Principal.Id.Resource
 
 	user, err := d.client.GetUserPrincipal(ctx, userId)
@@ -325,12 +327,42 @@ func (d *databaseRolePrincipalSyncer) Revoke(ctx context.Context, grant *v2.Gran
 		return nil, err
 	}
 
-	return nil, err
+	// Check if user has no remaining permissions and delete login if enabled
+	if d.autoDeleteOrphanedLogins {
+		hasPermissions, err := d.client.UserHasRemainingPermissions(ctx, userId)
+		if err != nil {
+			l.Warn("failed to check remaining permissions, skipping auto-delete", zap.Error(err))
+		} else if !hasPermissions {
+			l.Info("user has no remaining permissions, deleting login", zap.String("user", user.Name))
+			err = d.client.DeleteUserFromServer(ctx, user.Name)
+			if err != nil {
+				l.Warn("failed to delete orphaned login", zap.String("user", user.Name), zap.Error(err))
+				// Don't fail the revoke operation if delete fails
+			}
+		} else {
+			// User still has permissions - log details for debugging
+			details, err := d.client.GetUserPermissionDetails(ctx, userId)
+			if err != nil {
+				l.Warn("failed to get permission details for debugging", zap.Error(err))
+			} else {
+				l.Info("user still has permissions, not deleting",
+					zap.String("user", user.Name),
+					zap.Strings("server_permissions", details.ServerPermissions),
+					zap.Strings("server_roles", details.ServerRoles),
+					zap.Any("database_permissions", details.DatabasePermissions),
+					zap.Any("database_roles", details.DatabaseRoles),
+				)
+			}
+		}
+	}
+
+	return nil, nil
 }
 
-func newDatabaseRolePrincipalSyncer(ctx context.Context, c *mssqldb.Client) *databaseRolePrincipalSyncer {
+func newDatabaseRolePrincipalSyncer(ctx context.Context, c *mssqldb.Client, autoDeleteOrphanedLogins bool) *databaseRolePrincipalSyncer {
 	return &databaseRolePrincipalSyncer{
-		resourceType: resourceTypeDatabaseRole,
-		client:       c,
+		resourceType:            resourceTypeDatabaseRole,
+		client:                  c,
+		autoDeleteOrphanedLogins: autoDeleteOrphanedLogins,
 	}
 }

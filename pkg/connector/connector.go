@@ -12,7 +12,9 @@ import (
 )
 
 type Mssqldb struct {
-	client *mssqldb.Client
+	client                *mssqldb.Client
+	appName               string
+	autoDeleteOrphanedLogins bool
 }
 
 // Resource model:
@@ -31,8 +33,13 @@ func (o *Mssqldb) Metadata(ctx context.Context) (*v2.ConnectorMetadata, error) {
 		return nil, err
 	}
 
+	displayName := o.appName
+	if displayName == "" {
+		displayName = fmt.Sprintf("Microsoft SQL Server (%s)", serverInfo.Name)
+	}
+
 	return &v2.ConnectorMetadata{
-		DisplayName: fmt.Sprintf("Microsoft SQL Server (%s)", serverInfo.Name),
+		DisplayName: displayName,
 		Annotations: annos,
 		Description: "Baton connector for Microsoft SQL Server connector",
 		AccountCreationSchema: &v2.ConnectorAccountCreationSchema{
@@ -84,20 +91,22 @@ func (o *Mssqldb) Validate(ctx context.Context) (annotations.Annotations, error)
 func (o *Mssqldb) ResourceSyncers(ctx context.Context) []connectorbuilder.ResourceSyncer {
 	return []connectorbuilder.ResourceSyncer{
 		newServerSyncer(ctx, o.client),
-		newDatabaseSyncer(ctx, o.client),
+		newDatabaseSyncer(ctx, o.client, o.autoDeleteOrphanedLogins),
 		newUserPrincipalSyncer(ctx, o.client),
-		newServerRolePrincipalSyncer(ctx, o.client),
-		newDatabaseRolePrincipalSyncer(ctx, o.client),
+		newServerRolePrincipalSyncer(ctx, o.client, o.autoDeleteOrphanedLogins),
+		newDatabaseRolePrincipalSyncer(ctx, o.client, o.autoDeleteOrphanedLogins),
 		newGroupPrincipalSyncer(ctx, o.client),
 	}
 }
 
-func New(ctx context.Context, dsn string, skipUnavailableDatabases bool) (*Mssqldb, error) {
+func New(ctx context.Context, dsn string, skipUnavailableDatabases bool, appName string, autoDeleteOrphanedLogins bool) (*Mssqldb, error) {
 	c, err := mssqldb.New(ctx, dsn, skipUnavailableDatabases)
 	if err != nil {
 		return nil, err
 	}
 	return &Mssqldb{
-		client: c,
+		client:                c,
+		appName:               appName,
+		autoDeleteOrphanedLogins: autoDeleteOrphanedLogins,
 	}, nil
 }

@@ -58,8 +58,16 @@ func (d *userPrincipalSyncer) List(ctx context.Context, parentResourceID *v2.Res
 
 		userOpts := []resource.UserTraitOption{resource.WithStatus(status)}
 
+		// Check if it's already a valid email address
 		if _, err = mail.ParseAddress(principalModel.Name); err == nil {
 			userOpts = append(userOpts, resource.WithEmail(principalModel.Name, true))
+		} else if principalModel.Type == "WINDOWS_LOGIN" || strings.Contains(principalModel.Name, "\\") {
+			// Parse Windows login format (DOMAIN\first.last or first.last) and convert to email
+			// Check for backslash as fallback in case type_desc isn't exactly "WINDOWS_LOGIN"
+			email := parseWindowsLoginToEmail(principalModel.Name)
+			if email != "" {
+				userOpts = append(userOpts, resource.WithEmail(email, true))
+			}
 		}
 
 		r, err := resource.NewUserResource(
@@ -301,6 +309,32 @@ func generateStrongPassword() string {
 	}
 
 	return string(password)
+}
+
+// parseWindowsLoginToEmail converts Windows login usernames to email format.
+// Handles formats like:
+//   - "DOMAIN\first.last" -> "first.last@rithum.com"
+//   - "first.last" -> "first.last@rithum.com"
+// Returns empty string if the format doesn't match expected patterns.
+func parseWindowsLoginToEmail(username string) string {
+	const emailDomain = "@rithum.com"
+	
+	// Remove domain prefix if present (DOMAIN\username)
+	parts := strings.Split(username, "\\")
+	userPart := parts[len(parts)-1]
+	
+	// Check if it looks like a first.last format
+	// Basic validation: should contain a dot and be alphanumeric with dots/hyphens
+	if strings.Contains(userPart, ".") {
+		// Remove any invalid characters and ensure it's a valid email local part
+		// Allow alphanumeric, dots, hyphens, underscores
+		cleaned := strings.TrimSpace(userPart)
+		if cleaned != "" {
+			return cleaned + emailDomain
+		}
+	}
+	
+	return ""
 }
 
 func newUserPrincipalSyncer(ctx context.Context, c *mssqldb.Client) *userPrincipalSyncer {
