@@ -242,13 +242,14 @@ func BuildBatonIDGrantOptions(principalID *v2.ResourceId, principalType string, 
 }
 
 func (d *serverRolePrincipalSyncer) Grant(ctx context.Context, resource *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
+	l := ctxzap.Extract(ctx)
 	var err error
 
 	if resource.Id.ResourceType != resourceTypeUser.Id {
 		return nil, nil, fmt.Errorf("resource type %s is not supported for granting", resource.Id.ResourceType)
 	}
 
-	// database-role:baton_test:6:member
+	// server-role:6:member or similar format
 	splitId := strings.Split(entitlement.Id, ":")
 	if len(splitId) < 2 {
 		return nil, nil, fmt.Errorf("unexpected entitlement id: %s", entitlement.Id)
@@ -260,13 +261,19 @@ func (d *serverRolePrincipalSyncer) Grant(ctx context.Context, resource *v2.Reso
 
 	role, err = d.client.GetServerRole(ctx, roleId)
 	if err != nil {
+		l.Error("failed to get server role", zap.String("roleId", roleId), zap.Error(err))
 		return nil, nil, err
 	}
 
+	l.Info("adding user to server role", zap.String("user", resource.Id.Resource), zap.String("role", role.Name))
+
 	err = d.client.AddUserToServerRole(ctx, role.Name, resource.Id.Resource)
 	if err != nil {
+		l.Error("failed to add user to server role", zap.String("user", resource.Id.Resource), zap.String("role", role.Name), zap.Error(err))
 		return nil, nil, err
 	}
+
+	l.Info("successfully added user to server role", zap.String("user", resource.Id.Resource), zap.String("role", role.Name))
 
 	grants := []*v2.Grant{
 		grTypes.NewGrant(resource, "member", &v2.ResourceId{
@@ -279,7 +286,6 @@ func (d *serverRolePrincipalSyncer) Grant(ctx context.Context, resource *v2.Reso
 }
 
 func (d *serverRolePrincipalSyncer) Revoke(ctx context.Context, grant *v2.Grant) (annotations.Annotations, error) {
-	l := ctxzap.Extract(ctx)
 	userId := grant.Principal.Id.Resource
 
 	user, err := d.client.GetUserPrincipal(ctx, userId)
@@ -305,34 +311,8 @@ func (d *serverRolePrincipalSyncer) Revoke(ctx context.Context, grant *v2.Grant)
 		return nil, err
 	}
 
-	// Check if user has no remaining permissions and delete login if enabled
-	if d.autoDeleteOrphanedLogins {
-		hasPermissions, err := d.client.UserHasRemainingPermissions(ctx, userId)
-		if err != nil {
-			l.Warn("failed to check remaining permissions, skipping auto-delete", zap.Error(err))
-		} else if !hasPermissions {
-			l.Info("user has no remaining permissions, deleting login", zap.String("user", user.Name))
-			err = d.client.DeleteUserFromServer(ctx, user.Name)
-			if err != nil {
-				l.Warn("failed to delete orphaned login", zap.String("user", user.Name), zap.Error(err))
-				// Don't fail the revoke operation if delete fails
-			}
-		} else {
-			// User still has permissions - log details for debugging
-			details, err := d.client.GetUserPermissionDetails(ctx, userId)
-			if err != nil {
-				l.Warn("failed to get permission details for debugging", zap.Error(err))
-			} else {
-				l.Info("user still has permissions, not deleting",
-					zap.String("user", user.Name),
-					zap.Strings("server_permissions", details.ServerPermissions),
-					zap.Strings("server_roles", details.ServerRoles),
-					zap.Any("database_permissions", details.DatabasePermissions),
-					zap.Any("database_roles", details.DatabaseRoles),
-				)
-			}
-		}
-	}
+	// Check if user has no remaining server permissions and delete login if enabled
+	checkAndDeleteOrphanedServerLogin(ctx, d.client, d.autoDeleteOrphanedLogins, userId, user.Name)
 
 	return nil, nil
 }

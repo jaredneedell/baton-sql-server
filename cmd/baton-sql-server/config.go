@@ -14,8 +14,10 @@ var (
 		field.WithDescription("Custom app name to display in the connector metadata. If not set, defaults to 'Microsoft SQL Server ({serverName})'"))
 	autoDeleteOrphanedLogins = field.BoolField("auto-delete-orphaned-logins",
 		field.WithDescription("Automatically delete user logins from the server when they have no remaining permissions after a revoke operation"))
+	windowsLoginEmailDomain = field.StringField("windows-login-email-domain",
+		field.WithDescription("Email domain to use when converting Windows login usernames to email format (e.g., 'rithum.com'). Defaults to 'rithum.com'"))
 )
 
 var cfg = field.Configuration{
-	Fields: []field.SchemaField{dsn, skipUnavailableDatabases, appName, autoDeleteOrphanedLogins},
+	Fields: []field.SchemaField{dsn, skipUnavailableDatabases, appName, autoDeleteOrphanedLogins, windowsLoginEmailDomain},
 }

@@ -24,8 +24,9 @@ var _ connectorbuilder.ResourceDeleter = (*userPrincipalSyncer)(nil)
 
 // userPrincipalSyncer implements both ResourceSyncer and AccountManager.
 type userPrincipalSyncer struct {
-	resourceType *v2.ResourceType
-	client       *mssqldb.Client
+	resourceType            *v2.ResourceType
+	client                  *mssqldb.Client
+	windowsLoginEmailDomain string
 }
 
 var loginPermissions = map[string]string{
@@ -64,7 +65,7 @@ func (d *userPrincipalSyncer) List(ctx context.Context, parentResourceID *v2.Res
 		} else if principalModel.Type == "WINDOWS_LOGIN" || strings.Contains(principalModel.Name, "\\") {
 			// Parse Windows login format (DOMAIN\first.last or first.last) and convert to email
 			// Check for backslash as fallback in case type_desc isn't exactly "WINDOWS_LOGIN"
-			email := parseWindowsLoginToEmail(principalModel.Name)
+			email := d.parseWindowsLoginToEmail(principalModel.Name)
 			if email != "" {
 				userOpts = append(userOpts, resource.WithEmail(email, true))
 			}
@@ -164,8 +165,15 @@ func (d *userPrincipalSyncer) CreateAccount(
 	userOpts = append(userOpts, resource.WithUserProfile(profile))
 	userOpts = append(userOpts, resource.WithStatus(v2.UserTrait_Status_STATUS_ENABLED))
 
+	// Check if it's already a valid email address
 	if _, err = mail.ParseAddress(username); err == nil {
 		userOpts = append(userOpts, resource.WithEmail(username, true))
+	} else if loginType == mssqldb.LoginTypeWindows {
+		// Parse Windows login format (DOMAIN\first.last or first.last) and convert to email
+		email := d.parseWindowsLoginToEmail(formattedUsername)
+		if email != "" {
+			userOpts = append(userOpts, resource.WithEmail(email, true))
+		}
 	}
 
 	// Create a resource object to represent the user
@@ -313,11 +321,11 @@ func generateStrongPassword() string {
 
 // parseWindowsLoginToEmail converts Windows login usernames to email format.
 // Handles formats like:
-//   - "DOMAIN\first.last" -> "first.last@rithum.com"
-//   - "first.last" -> "first.last@rithum.com"
+//   - "DOMAIN\first.last" -> "first.last@{emailDomain}"
+//   - "first.last" -> "first.last@{emailDomain}"
 // Returns empty string if the format doesn't match expected patterns.
-func parseWindowsLoginToEmail(username string) string {
-	const emailDomain = "@rithum.com"
+func (d *userPrincipalSyncer) parseWindowsLoginToEmail(username string) string {
+	emailDomain := "@" + d.windowsLoginEmailDomain
 	
 	// Remove domain prefix if present (DOMAIN\username)
 	parts := strings.Split(username, "\\")
@@ -337,9 +345,14 @@ func parseWindowsLoginToEmail(username string) string {
 	return ""
 }
 
-func newUserPrincipalSyncer(ctx context.Context, c *mssqldb.Client) *userPrincipalSyncer {
+func newUserPrincipalSyncer(ctx context.Context, c *mssqldb.Client, windowsLoginEmailDomain string) *userPrincipalSyncer {
+	// Default to rithum.com if not specified
+	if windowsLoginEmailDomain == "" {
+		windowsLoginEmailDomain = "rithum.com"
+	}
 	return &userPrincipalSyncer{
-		resourceType: resourceTypeUser,
-		client:       c,
+		resourceType:            resourceTypeUser,
+		client:                  c,
+		windowsLoginEmailDomain: windowsLoginEmailDomain,
 	}
 }

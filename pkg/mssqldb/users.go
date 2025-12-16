@@ -359,15 +359,14 @@ func (c *Client) UserHasRemainingPermissions(ctx context.Context, principalID st
 	l := ctxzap.Extract(ctx)
 	l.Debug("checking if user has remaining permissions", zap.String("principal_id", principalID))
 
-	// Check server-level permissions (excluding COSQ - Connect SQL, which can be ignored)
+	// Check server-level permissions (excluding ignored permissions)
 	var serverPermCount int
 	query := `
 	SELECT COUNT(*) 
 	FROM sys.server_permissions 
 	WHERE grantee_principal_id = @p1 
 	AND (state = 'G' OR state = 'W')
-	AND type != 'COSQ'
-	`
+	` + BuildIgnoredPermissionsClause(IgnoredPermissionsForDeletion.Server)
 	err := c.db.GetContext(ctx, &serverPermCount, query, principalID)
 	if err != nil {
 		return false, fmt.Errorf("failed to check server permissions: %w", err)
@@ -422,13 +421,15 @@ func (c *Client) UserHasRemainingPermissions(ctx context.Context, principalID st
 			continue
 		}
 
-		// Check database-level permissions
+		// Check database-level permissions (excluding ignored permissions)
 		var dbPermCount int
 		query = fmt.Sprintf(`
 		SELECT COUNT(*) 
 		FROM [%s].sys.database_permissions 
-		WHERE grantee_principal_id = @p1 AND (state = 'G' OR state = 'W')
-		`, db.Name)
+		WHERE grantee_principal_id = @p1 
+		AND (state = 'G' OR state = 'W')
+		%s
+		`, db.Name, BuildIgnoredPermissionsClause(IgnoredPermissionsForDeletion.Database))
 		err = c.db.GetContext(ctx, &dbPermCount, query, dbPrincipalID)
 		if err != nil {
 			l.Warn("error checking database permissions", zap.String("database", db.Name), zap.Error(err))
@@ -461,6 +462,133 @@ func (c *Client) UserHasRemainingPermissions(ctx context.Context, principalID st
 	return false, nil
 }
 
+// UserHasRemainingServerPermissions checks if a user has any remaining server-level permissions or roles.
+// Returns true if the user has any server-level permissions, false otherwise.
+func (c *Client) UserHasRemainingServerPermissions(ctx context.Context, principalID string) (bool, error) {
+	l := ctxzap.Extract(ctx)
+	l.Debug("checking if user has remaining server permissions", zap.String("principal_id", principalID))
+
+	// Check server-level permissions (excluding ignored permissions)
+	var serverPermCount int
+	query := `
+	SELECT COUNT(*) 
+	FROM sys.server_permissions 
+	WHERE grantee_principal_id = @p1 
+	AND (state = 'G' OR state = 'W')
+	` + BuildIgnoredPermissionsClause(IgnoredPermissionsForDeletion.Server)
+	err := c.db.GetContext(ctx, &serverPermCount, query, principalID)
+	if err != nil {
+		return false, fmt.Errorf("failed to check server permissions: %w", err)
+	}
+	if serverPermCount > 0 {
+		l.Debug("user has server permissions", zap.Int("count", serverPermCount))
+		return true, nil
+	}
+
+	// Check server role memberships
+	var serverRoleCount int
+	query = `
+	SELECT COUNT(*) 
+	FROM sys.server_role_members 
+	WHERE member_principal_id = @p1
+	`
+	err = c.db.GetContext(ctx, &serverRoleCount, query, principalID)
+	if err != nil {
+		return false, fmt.Errorf("failed to check server role memberships: %w", err)
+	}
+	if serverRoleCount > 0 {
+		l.Debug("user has server role memberships", zap.Int("count", serverRoleCount))
+		return true, nil
+	}
+
+	l.Debug("user has no remaining server permissions", zap.String("principal_id", principalID))
+	return false, nil
+}
+
+// UserHasRemainingDatabasePermissions checks if a user has any remaining permissions or roles in a specific database.
+// Returns true if the user has any database-level permissions, false otherwise.
+func (c *Client) UserHasRemainingDatabasePermissions(ctx context.Context, principalID string, dbName string) (bool, error) {
+	l := ctxzap.Extract(ctx)
+	l.Debug("checking if user has remaining database permissions", zap.String("principal_id", principalID), zap.String("database", dbName))
+
+	if strings.ContainsAny(dbName, "[]\"';") {
+		return false, fmt.Errorf("invalid characters in dbName")
+	}
+
+	// Check if user exists in this database
+	var dbPrincipalID int64
+	query := fmt.Sprintf(`
+	SELECT principal_id 
+	FROM [%s].sys.database_principals 
+	WHERE sid = (SELECT sid FROM sys.server_principals WHERE principal_id = @p1)
+	AND type IN ('S', 'U', 'C', 'E', 'K')
+	`, dbName)
+	err := c.db.GetContext(ctx, &dbPrincipalID, query, principalID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// User doesn't exist in this database, so no permissions
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to check database principal: %w", err)
+	}
+
+	// Check database-level permissions (excluding ignored permissions)
+	var dbPermCount int
+	query = fmt.Sprintf(`
+	SELECT COUNT(*) 
+	FROM [%s].sys.database_permissions 
+	WHERE grantee_principal_id = @p1 
+	AND (state = 'G' OR state = 'W')
+	AND class = 0 AND major_id = 0
+	%s
+	`, dbName, BuildIgnoredPermissionsClause(IgnoredPermissionsForDeletion.Database))
+	err = c.db.GetContext(ctx, &dbPermCount, query, dbPrincipalID)
+	if err != nil {
+		return false, fmt.Errorf("failed to check database permissions: %w", err)
+	}
+	if dbPermCount > 0 {
+		l.Debug("user has database permissions", zap.String("database", dbName), zap.Int("count", dbPermCount))
+		return true, nil
+	}
+
+	// Check database role memberships
+	var dbRoleCount int
+	query = fmt.Sprintf(`
+	SELECT COUNT(*) 
+	FROM [%s].sys.database_role_members 
+	WHERE member_principal_id = @p1
+	`, dbName)
+	err = c.db.GetContext(ctx, &dbRoleCount, query, dbPrincipalID)
+	if err != nil {
+		return false, fmt.Errorf("failed to check database role memberships: %w", err)
+	}
+	if dbRoleCount > 0 {
+		l.Debug("user has database role memberships", zap.String("database", dbName), zap.Int("count", dbRoleCount))
+		return true, nil
+	}
+
+	l.Debug("user has no remaining database permissions", zap.String("principal_id", principalID), zap.String("database", dbName))
+	return false, nil
+}
+
+// DeleteUserFromDatabase deletes a user from a specific database.
+func (c *Client) DeleteUserFromDatabase(ctx context.Context, dbName string, userName string) error {
+	if strings.ContainsAny(dbName, "[]\"';") || strings.ContainsAny(userName, "[]\"';") {
+		return fmt.Errorf("invalid characters in dbName or userName")
+	}
+
+	query := fmt.Sprintf(`
+	USE [%s];
+	DROP USER [%s];
+	`, dbName, userName)
+
+	_, err := c.db.ExecContext(ctx, query)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 // UserPermissionDetails contains detailed information about a user's permissions
 type UserPermissionDetails struct {
 	PrincipalID           string
@@ -491,14 +619,13 @@ func (c *Client) GetUserPermissionDetails(ctx context.Context, principalID strin
 		DatabaseRoles:        make(map[string][]string),
 	}
 
-		// Get server-level permissions (excluding COSQ - Connect SQL, which can be ignored)
+		// Get server-level permissions (excluding ignored permissions)
 	query := `
 	SELECT perms.type, perms.state
 	FROM sys.server_permissions perms
 	WHERE perms.grantee_principal_id = @p1 
 	AND (perms.state = 'G' OR perms.state = 'W')
-	AND perms.type != 'COSQ'
-	`
+	` + BuildIgnoredPermissionsClause(IgnoredPermissionsForDeletion.Server)
 	rows, err := c.db.QueryxContext(ctx, query, principalID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query server permissions: %w", err)
@@ -566,13 +693,15 @@ func (c *Client) GetUserPermissionDetails(ctx context.Context, principalID strin
 			continue
 		}
 
-		// Get database-level permissions
+		// Get database-level permissions (excluding ignored permissions)
 		query = fmt.Sprintf(`
 		SELECT perms.type, perms.state
 		FROM [%s].sys.database_permissions perms
-		WHERE perms.grantee_principal_id = @p1 AND (perms.state = 'G' OR perms.state = 'W')
+		WHERE perms.grantee_principal_id = @p1 
+		AND (perms.state = 'G' OR perms.state = 'W')
 		AND perms.class = 0 AND perms.major_id = 0
-		`, db.Name)
+		%s
+		`, db.Name, BuildIgnoredPermissionsClause(IgnoredPermissionsForDeletion.Database))
 		rows, err = c.db.QueryxContext(ctx, query, dbPrincipalID)
 		if err == nil {
 			var dbPerms []string

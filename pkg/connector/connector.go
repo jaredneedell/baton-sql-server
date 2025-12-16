@@ -12,9 +12,10 @@ import (
 )
 
 type Mssqldb struct {
-	client                *mssqldb.Client
-	appName               string
+	client                  *mssqldb.Client
+	appName                 string
 	autoDeleteOrphanedLogins bool
+	windowsLoginEmailDomain  string
 }
 
 // Resource model:
@@ -92,21 +93,26 @@ func (o *Mssqldb) ResourceSyncers(ctx context.Context) []connectorbuilder.Resour
 	return []connectorbuilder.ResourceSyncer{
 		newServerSyncer(ctx, o.client),
 		newDatabaseSyncer(ctx, o.client, o.autoDeleteOrphanedLogins),
-		newUserPrincipalSyncer(ctx, o.client),
+		newUserPrincipalSyncer(ctx, o.client, o.windowsLoginEmailDomain),
 		newServerRolePrincipalSyncer(ctx, o.client, o.autoDeleteOrphanedLogins),
 		newDatabaseRolePrincipalSyncer(ctx, o.client, o.autoDeleteOrphanedLogins),
 		newGroupPrincipalSyncer(ctx, o.client),
 	}
 }
 
-func New(ctx context.Context, dsn string, skipUnavailableDatabases bool, appName string, autoDeleteOrphanedLogins bool) (*Mssqldb, error) {
+func New(ctx context.Context, dsn string, skipUnavailableDatabases bool, appName string, autoDeleteOrphanedLogins bool, windowsLoginEmailDomain string) (*Mssqldb, error) {
 	c, err := mssqldb.New(ctx, dsn, skipUnavailableDatabases)
 	if err != nil {
 		return nil, err
 	}
+	// Default to rithum.com if not specified
+	if windowsLoginEmailDomain == "" {
+		windowsLoginEmailDomain = "rithum.com"
+	}
 	return &Mssqldb{
-		client:                c,
-		appName:               appName,
+		client:                  c,
+		appName:                 appName,
 		autoDeleteOrphanedLogins: autoDeleteOrphanedLogins,
+		windowsLoginEmailDomain:  windowsLoginEmailDomain,
 	}, nil
 }
