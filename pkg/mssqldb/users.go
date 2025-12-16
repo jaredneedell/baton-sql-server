@@ -29,14 +29,14 @@ type UserModel struct {
 }
 
 type UserDBModel struct {
-	ID                  string `db:"principal_id"`
-	DatabasePrincipalId string `db:"database_principal_id"`
-	Sid                 string `db:"sid"`
-	Name                string `db:"name"`
-	Type                string `db:"type_desc"`
-	CreateDate          string `db:"create_date"`
-	ModifyDate          string `db:"modify_date"`
-	OwningPrincipalId   string `db:"owning_principal_id"`
+	ID                  string         `db:"principal_id"`
+	DatabasePrincipalId sql.NullString `db:"database_principal_id"`
+	Sid                 string         `db:"sid"`
+	Name                string         `db:"name"`
+	Type                string         `db:"type_desc"`
+	CreateDate          string         `db:"create_date"`
+	ModifyDate          string         `db:"modify_date"`
+	OwningPrincipalId   sql.NullString `db:"owning_principal_id"`
 }
 
 func (c *Client) ListServerUserPrincipals(ctx context.Context, pager *Pager) ([]*UserModel, string, error) {

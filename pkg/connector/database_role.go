@@ -265,26 +265,36 @@ func (d *databaseRolePrincipalSyncer) Grant(ctx context.Context, resource *v2.Re
 		return nil, nil, err
 	}
 
+	// Get the server principal to get the user name
+	serverUser, err := d.client.GetUserPrincipal(ctx, resource.Id.Resource)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	dbUser, err := d.client.GetUserFromDb(ctx, dbName, resource.Id.Resource)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	if dbUser == nil {
-		l.Info("user not found in database, creating user for principal", zap.String("user", resource.Id.Resource))
+		l.Info("user not found in database, creating user for principal", zap.String("user", serverUser.Name))
 
-		user, err := d.client.GetUserPrincipal(ctx, resource.Id.Resource)
+		err = d.client.CreateDatabaseUserForPrincipal(ctx, dbName, serverUser.Name)
 		if err != nil {
 			return nil, nil, err
 		}
-
-		err = d.client.CreateDatabaseUserForPrincipal(ctx, dbName, user.Name)
+		// After creating, get the database user to use its name
+		dbUser, err = d.client.GetUserFromDb(ctx, dbName, resource.Id.Resource)
 		if err != nil {
 			return nil, nil, err
+		}
+		if dbUser == nil {
+			return nil, nil, fmt.Errorf("failed to retrieve database user after creation")
 		}
 	}
 
-	err = d.client.AddUserToDatabaseRole(ctx, role.Name, dbName, resource.Id.Resource)
+	// Use the database user name, not the principal ID
+	err = d.client.AddUserToDatabaseRole(ctx, role.Name, dbName, dbUser.Name)
 	if err != nil {
 		return nil, nil, err
 	}
