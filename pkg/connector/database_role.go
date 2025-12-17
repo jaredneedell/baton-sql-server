@@ -22,9 +22,10 @@ import (
 )
 
 type databaseRolePrincipalSyncer struct {
-	resourceType            *v2.ResourceType
-	client                  *mssqldb.Client
+	resourceType             *v2.ResourceType
+	client                   *mssqldb.Client
 	autoDeleteOrphanedLogins bool
+	c1ApiClient              *c1ApiClient
 }
 
 func (d *databaseRolePrincipalSyncer) ResourceType(ctx context.Context) *v2.ResourceType {
@@ -186,11 +187,8 @@ func (d *databaseRolePrincipalSyncer) Grants(
 					return nil, "", nil, err
 				}
 
+				// All principals (including groups) are treated as User resources
 				rt := resourceTypeUser
-
-				if dbPrincipal.Type == "G" || dbPrincipal.Type == "X" {
-					rt = resourceTypeGroup
-				}
 
 				principalID, err = sdkResources.NewResourceID(rt, serverPrincipal.ID)
 				if err != nil {
@@ -336,16 +334,18 @@ func (d *databaseRolePrincipalSyncer) Revoke(ctx context.Context, grant *v2.Gran
 		return nil, err
 	}
 
-	// Check if user has no remaining permissions in this database and delete from database if enabled
-	checkAndDeleteOrphanedDatabaseUser(ctx, d.client, d.autoDeleteOrphanedLogins, userId, user.Name, dbName)
+	// Check if user has any remaining permissions (excluding connect permissions)
+	// If only connect permissions remain, revoke C1 app entitlement via API
+	checkAndRevokeC1EntitlementForDatabase(ctx, d.client, userId, user.Name, dbName, d.c1ApiClient)
 
 	return nil, nil
 }
 
-func newDatabaseRolePrincipalSyncer(ctx context.Context, c *mssqldb.Client, autoDeleteOrphanedLogins bool) *databaseRolePrincipalSyncer {
+func newDatabaseRolePrincipalSyncer(ctx context.Context, c *mssqldb.Client, autoDeleteOrphanedLogins bool, c1ApiClient *c1ApiClient) *databaseRolePrincipalSyncer {
 	return &databaseRolePrincipalSyncer{
-		resourceType:            resourceTypeDatabaseRole,
-		client:                  c,
+		resourceType:             resourceTypeDatabaseRole,
+		client:                   c,
 		autoDeleteOrphanedLogins: autoDeleteOrphanedLogins,
+		c1ApiClient:              c1ApiClient,
 	}
 }

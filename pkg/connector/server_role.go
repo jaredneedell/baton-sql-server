@@ -10,7 +10,6 @@ import (
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	_ "github.com/conductorone/baton-sdk/pkg/annotations"
-	bid "github.com/conductorone/baton-sdk/pkg/bid"
 	"github.com/conductorone/baton-sdk/pkg/pagination"
 	enTypes "github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	grTypes "github.com/conductorone/baton-sdk/pkg/types/grant"
@@ -21,9 +20,10 @@ import (
 )
 
 type serverRolePrincipalSyncer struct {
-	resourceType            *v2.ResourceType
-	client                  *mssqldb.Client
+	resourceType             *v2.ResourceType
+	client                   *mssqldb.Client
 	autoDeleteOrphanedLogins bool
+	c1ApiClient              *c1ApiClient
 }
 
 func (d *serverRolePrincipalSyncer) ResourceType(ctx context.Context) *v2.ResourceType {
@@ -157,10 +157,8 @@ func (d *serverRolePrincipalSyncer) Grants(ctx context.Context, resource *v2.Res
 			var rt *v2.ResourceType
 
 			switch principal.Type {
-			case "S", "E", "C", "U":
+			case "S", "E", "C", "U", "X", "G":
 				rt = resourceTypeUser
-			case "X", "G":
-				rt = resourceTypeGroup
 			case "R":
 				rt = resourceTypeServerRole
 				pID := strconv.FormatInt(principal.ID, 10)
@@ -206,26 +204,14 @@ func BuildBatonIDGrantOptions(principalID *v2.ResourceId, principalType string, 
 	grantOpts := []grTypes.GrantOption{}
 
 	switch principalType {
-	case "G": // Configure BatonID matching for Active Directory groups
-		gr := &v2.Resource{
-			Id: principalID,
-		}
-
-		ent := enTypes.NewAssignmentEntitlement(gr, "member")
-		bidEnt, err := bid.MakeBid(ent)
-		if err != nil {
-			return nil, err
-		}
-
+	case "G", "X": // Groups are now treated as User resources, so use USER trait matching
+		// Groups are created as User resources, so we use TRAIT_USER for matching
+		// and don't create expandable entitlements that reference Group resources
 		grantOpts = append(grantOpts,
 			grTypes.WithAnnotation(&v2.ExternalResourceMatch{
-				ResourceType: v2.ResourceType_TRAIT_GROUP,
+				ResourceType: v2.ResourceType_TRAIT_USER,
 				Key:          "downlevel_logon_name",
 				Value:        principalName,
-			}),
-			grTypes.WithAnnotation(&v2.GrantExpandable{
-				EntitlementIds: []string{bidEnt},
-				Shallow:        true,
 			}),
 		)
 	case "U": // Configure BatonID matching for Active Directory users
@@ -311,16 +297,18 @@ func (d *serverRolePrincipalSyncer) Revoke(ctx context.Context, grant *v2.Grant)
 		return nil, err
 	}
 
-	// Check if user has no remaining server permissions and delete login if enabled
-	checkAndDeleteOrphanedServerLogin(ctx, d.client, d.autoDeleteOrphanedLogins, userId, user.Name)
+	// Check if user has any remaining server permissions (excluding connect permissions)
+	// If only connect permissions remain, revoke C1 app entitlement via API
+	checkAndRevokeC1EntitlementForServer(ctx, d.client, userId, user.Name, d.c1ApiClient)
 
 	return nil, nil
 }
 
-func newServerRolePrincipalSyncer(ctx context.Context, c *mssqldb.Client, autoDeleteOrphanedLogins bool) *serverRolePrincipalSyncer {
+func newServerRolePrincipalSyncer(ctx context.Context, c *mssqldb.Client, autoDeleteOrphanedLogins bool, c1ApiClient *c1ApiClient) *serverRolePrincipalSyncer {
 	return &serverRolePrincipalSyncer{
-		resourceType:            resourceTypeServerRole,
-		client:                  c,
+		resourceType:             resourceTypeServerRole,
+		client:                   c,
 		autoDeleteOrphanedLogins: autoDeleteOrphanedLogins,
+		c1ApiClient:              c1ApiClient,
 	}
 }

@@ -8,71 +8,75 @@ import (
 	"go.uber.org/zap"
 )
 
-// checkAndDeleteOrphanedDatabaseUser checks if a user has remaining permissions in a specific database
-// and deletes the user from that database if auto-delete is enabled and the user has no meaningful permissions remaining.
-// This is called after revoking a database role.
-func checkAndDeleteOrphanedDatabaseUser(ctx context.Context, client *mssqldb.Client, autoDeleteEnabled bool, userID, userName, dbName string) {
-	if !autoDeleteEnabled {
+// revokeC1EntitlementIfNoPermissions checks if a user has remaining permissions and revokes
+// the C1 app entitlement if they only have connect permissions remaining.
+// This replaces the auto-delete functionality.
+func revokeC1EntitlementIfNoPermissions(ctx context.Context, c1ApiClient *c1ApiClient, userID, userName string, hasPermissions bool, checkErr error, logFields ...zap.Field) {
+	if c1ApiClient == nil {
+		// C1 API not configured, skip
 		return
 	}
 
 	l := ctxzap.Extract(ctx)
-	hasPermissions, err := client.UserHasRemainingDatabasePermissions(ctx, userID, dbName)
-	if err != nil {
-		l.Warn("failed to check remaining database permissions, skipping auto-delete", zap.String("database", dbName), zap.Error(err))
+	if checkErr != nil {
+		l.Warn("failed to check remaining permissions, skipping C1 entitlement revocation", append(logFields, zap.Error(checkErr))...)
 		return
 	}
 
 	if !hasPermissions {
-		l.Info("user has no remaining permissions in database, deleting user from database", zap.String("user", userName), zap.String("database", dbName))
-		err = client.DeleteUserFromDatabase(ctx, dbName, userName)
-		if err != nil {
-			l.Warn("failed to delete orphaned database user", zap.String("user", userName), zap.String("database", dbName), zap.Error(err))
-			// Don't fail the revoke operation if delete fails
-			return
+		// User only has connect permissions remaining (or no permissions at all)
+		// Revoke C1 app entitlement
+		l.Info("user has no meaningful permissions remaining, revoking C1 app entitlement", logFields...)
+		if err := c1ApiClient.revokeEntitlementForUser(ctx, userName); err != nil {
+			l.Warn("failed to revoke C1 app entitlement",
+				append(logFields, zap.String("user_id", userID), zap.Error(err))...)
+			// Don't fail the revoke operation if entitlement revocation fails
 		}
-
 	} else {
-		l.Debug("user still has permissions in database, not deleting", zap.String("user", userName), zap.String("database", dbName))
+		l.Debug("user still has meaningful permissions, not revoking C1 entitlement", logFields...)
 	}
 }
 
-// checkAndDeleteOrphanedServerLogin checks if a user has remaining server-level permissions
-// and deletes the server login if auto-delete is enabled and the user has no meaningful permissions remaining.
-// This is called after revoking a server role.
-func checkAndDeleteOrphanedServerLogin(ctx context.Context, client *mssqldb.Client, autoDeleteEnabled bool, userID, userName string) {
-	if !autoDeleteEnabled {
-		return
-	}
-
-	l := ctxzap.Extract(ctx)
+// checkAndRevokeC1EntitlementForServer checks if a user has any remaining server-level permissions
+// (excluding connect permissions). If the user only has connect permissions remaining, it revokes
+// the C1 app entitlement via API call.
+func checkAndRevokeC1EntitlementForServer(ctx context.Context, client *mssqldb.Client, userID, userName string, c1ApiClient *c1ApiClient) {
 	hasPermissions, err := client.UserHasRemainingServerPermissions(ctx, userID)
+	revokeC1EntitlementIfNoPermissions(ctx, c1ApiClient, userID, userName, hasPermissions, err,
+		zap.String("user", userName))
+}
+
+// checkAndRevokeC1EntitlementForDatabase checks if a user has any remaining permissions in a specific database
+// (excluding connect permissions). If the user only has connect permissions remaining in that database,
+// it also checks server-level permissions. If the user has no meaningful permissions anywhere,
+// it revokes the C1 app entitlement via API call.
+func checkAndRevokeC1EntitlementForDatabase(ctx context.Context, client *mssqldb.Client, userID, userName, dbName string, c1ApiClient *c1ApiClient) {
+	l := ctxzap.Extract(ctx)
+
+	// Check if user has remaining permissions in this database (excluding connect)
+	hasDbPermissions, err := client.UserHasRemainingDatabasePermissions(ctx, userID, dbName)
 	if err != nil {
-		l.Warn("failed to check remaining server permissions, skipping auto-delete", zap.Error(err))
+		l.Warn("failed to check remaining database permissions, skipping C1 entitlement revocation",
+			zap.String("database", dbName), zap.Error(err))
 		return
 	}
 
-	if !hasPermissions {
-		l.Info("user has no remaining server permissions, deleting login", zap.String("user", userName))
-		err = client.DeleteUserFromServer(ctx, userName)
+	if !hasDbPermissions {
+		// User has no meaningful permissions in this database
+		// Check if they have any server-level permissions
+		hasServerPermissions, err := client.UserHasRemainingServerPermissions(ctx, userID)
 		if err != nil {
-			l.Warn("failed to delete orphaned login", zap.String("user", userName), zap.Error(err))
-			// Don't fail the revoke operation if delete fails
+			l.Warn("failed to check remaining server permissions, skipping C1 entitlement revocation", zap.Error(err))
 			return
 		}
 
+		// Revoke if no server permissions either
+		revokeC1EntitlementIfNoPermissions(ctx, c1ApiClient, userID, userName, hasServerPermissions, nil,
+			zap.String("user", userName),
+			zap.String("database", dbName))
 	} else {
-		// User still has server permissions - log details for debugging
-		details, err := client.GetUserPermissionDetails(ctx, userID)
-		if err != nil {
-			l.Warn("failed to get permission details for debugging", zap.Error(err))
-		} else {
-			l.Info("user still has server permissions, not deleting",
-				zap.String("user", userName),
-				zap.Strings("server_permissions", details.ServerPermissions),
-				zap.Strings("server_roles", details.ServerRoles),
-			)
-		}
+		l.Debug("user still has meaningful database permissions, not revoking C1 entitlement",
+			zap.String("user", userName),
+			zap.String("database", dbName))
 	}
 }
-

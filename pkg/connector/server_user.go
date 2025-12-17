@@ -10,7 +10,6 @@ import (
 
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
-	_ "github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
 	"github.com/conductorone/baton-sdk/pkg/pagination"
 	enTypes "github.com/conductorone/baton-sdk/pkg/types/entitlement"
@@ -136,16 +135,41 @@ func (d *userPrincipalSyncer) CreateAccount(
 		return nil, nil, nil, err
 	}
 
-	// Create the login
-	err = d.client.CreateLogin(ctx, loginType, formattedUsername, password)
-	if err != nil {
-		l.Error("Failed to create login", zap.Error(err), zap.String("loginType", string(loginType)))
-		return nil, nil, nil, fmt.Errorf("failed to create login: %w", err)
-	}
-
-	uid, err := d.client.GetUserPrincipalByName(ctx, formattedUsername)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to get user: %w", err)
+	// Check if login already exists before trying to create it
+	// This handles the case where the login was auto-deleted but the user is still in C1's App Access entitlement
+	// If a new request comes in before the sync cycle, C1 will try to create the login again
+	var uid *mssqldb.UserModel
+	existingUser, err := d.client.GetUserPrincipalByName(ctx, formattedUsername)
+	if err == nil && existingUser != nil {
+		// Login already exists, return the existing user resource
+		l.Info("Login already exists, returning existing user", zap.String("login", formattedUsername))
+		uid = existingUser
+	} else {
+		// Login doesn't exist (or error checking), try to create it
+		// This handles the case where login was auto-deleted but user is still in C1's App Access entitlement
+		err = d.client.CreateLogin(ctx, loginType, formattedUsername, password)
+		if err != nil {
+			// Check if error is "already exists" - this can happen in race conditions
+			if strings.Contains(err.Error(), "already exists") {
+				l.Info("Login already exists (detected from error), retrieving user", zap.String("login", formattedUsername))
+				// Try to get the existing user
+				uid, err = d.client.GetUserPrincipalByName(ctx, formattedUsername)
+				if err != nil {
+					l.Error("Failed to get existing user after 'already exists' error", zap.Error(err))
+					return nil, nil, nil, fmt.Errorf("failed to get existing user: %w", err)
+				}
+			} else {
+				// Some other error occurred during creation
+				l.Error("Failed to create login", zap.Error(err), zap.String("loginType", string(loginType)))
+				return nil, nil, nil, fmt.Errorf("failed to create login: %w", err)
+			}
+		} else {
+			// Successfully created, get the user
+			uid, err = d.client.GetUserPrincipalByName(ctx, formattedUsername)
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("failed to get user after creation: %w", err)
+			}
+		}
 	}
 
 	// Create a resource for the newly created login
@@ -260,11 +284,33 @@ func (d *userPrincipalSyncer) CreateAccountCapabilityDetails(
 }
 
 func (d *userPrincipalSyncer) Delete(ctx context.Context, resourceId *v2.ResourceId) (annotations.Annotations, error) {
+	l := ctxzap.Extract(ctx)
 	user, err := d.client.GetUserPrincipal(ctx, resourceId.GetResource())
 	if err != nil {
 		return nil, err
 	}
 
+	// Before dropping the server login, find and delete all database users across all databases
+	// This prevents orphaned database users when the login is dropped
+	dbUsers, err := d.client.FindAllDatabaseUsersForServerPrincipal(ctx, user.ID)
+	if err != nil {
+		l.Warn("failed to find database users, proceeding with login deletion", zap.String("user", user.Name), zap.Error(err))
+	} else {
+		// Delete user from each database
+		for _, dbUser := range dbUsers {
+			l.Info("deleting database user before dropping login", zap.String("user", dbUser.UserName), zap.String("database", dbUser.DatabaseName))
+			err = d.client.DeleteUserFromDatabase(ctx, dbUser.DatabaseName, dbUser.UserName)
+			if err != nil {
+				l.Warn("failed to delete database user, proceeding with login deletion",
+					zap.String("user", dbUser.UserName),
+					zap.String("database", dbUser.DatabaseName),
+					zap.Error(err))
+				// Continue with other databases and login deletion even if one fails
+			}
+		}
+	}
+
+	// Now drop the server login
 	err = d.client.DeleteUserFromServer(ctx, user.Name)
 	if err != nil {
 		return nil, err
@@ -323,14 +369,15 @@ func generateStrongPassword() string {
 // Handles formats like:
 //   - "DOMAIN\first.last" -> "first.last@{emailDomain}"
 //   - "first.last" -> "first.last@{emailDomain}"
+//
 // Returns empty string if the format doesn't match expected patterns.
 func (d *userPrincipalSyncer) parseWindowsLoginToEmail(username string) string {
 	emailDomain := "@" + d.windowsLoginEmailDomain
-	
+
 	// Remove domain prefix if present (DOMAIN\username)
 	parts := strings.Split(username, "\\")
 	userPart := parts[len(parts)-1]
-	
+
 	// Check if it looks like a first.last format
 	// Basic validation: should contain a dot and be alphanumeric with dots/hyphens
 	if strings.Contains(userPart, ".") {
@@ -341,7 +388,7 @@ func (d *userPrincipalSyncer) parseWindowsLoginToEmail(username string) string {
 			return cleaned + emailDomain
 		}
 	}
-	
+
 	return ""
 }
 

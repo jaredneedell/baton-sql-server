@@ -53,7 +53,7 @@ func main() {
 func getConnector(ctx context.Context, v *viper.Viper) (types.ConnectorServer, error) {
 	l := ctxzap.Extract(ctx)
 
-	cb, err := connector.New(ctx, v.GetString(dsn.FieldName), v.GetBool(skipUnavailableDatabases.FieldName), v.GetString(appName.FieldName), v.GetBool(autoDeleteOrphanedLogins.FieldName), v.GetString(windowsLoginEmailDomain.FieldName))
+	cb, err := connector.New(ctx, v.GetString(dsn.FieldName), v.GetBool(skipUnavailableDatabases.FieldName), v.GetString(appName.FieldName), v.GetBool(autoDeleteOrphanedLogins.FieldName), v.GetString(windowsLoginEmailDomain.FieldName), v.GetString(c1ApiClientId.FieldName), v.GetString(c1ApiClientSecret.FieldName), v.GetString(c1AppId.FieldName), v.GetString(c1EntitlementId.FieldName))
 	if err != nil {
 		l.Error("error creating connector", zap.Error(err))
 		return nil, err

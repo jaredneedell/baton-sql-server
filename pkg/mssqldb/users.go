@@ -66,8 +66,10 @@ WHERE
     type = 'S' 
     OR type = 'U' 
     OR type = 'C' 
-    or type = 'E' 
-    or type = 'K'
+    OR type = 'E' 
+    OR type = 'K'
+    OR type = 'G'
+    OR type = 'X'
   ) 
 ORDER BY 
   principal_id ASC OFFSET @p1 ROWS FETCH NEXT @p2 ROWS ONLY
@@ -163,8 +165,10 @@ WHERE
     type = 'S' 
     OR type = 'U' 
     OR type = 'C' 
-    or type = 'E' 
-    or type = 'K'
+    OR type = 'E' 
+    OR type = 'K'
+    OR type = 'G'
+    OR type = 'X'
   ) 
 ORDER BY 
   principal_id ASC OFFSET @p1 ROWS FETCH NEXT @p2 ROWS ONLY
@@ -219,6 +223,8 @@ WHERE
 		OR type = 'C'
 		OR type = 'E'
 		OR type = 'K'
+		OR type = 'G'
+		OR type = 'X'
 	) AND principal_id = @p1
 `
 
@@ -259,6 +265,8 @@ WHERE
 		OR type = 'C'
 		OR type = 'E'
 		OR type = 'K'
+		OR type = 'G'
+		OR type = 'X'
 	) AND name = @p1
 `
 
@@ -571,6 +579,58 @@ func (c *Client) UserHasRemainingDatabasePermissions(ctx context.Context, princi
 	return false, nil
 }
 
+// DatabaseUserInfo contains information about a database user
+type DatabaseUserInfo struct {
+	DatabaseName string
+	UserName     string
+}
+
+// FindAllDatabaseUsersForServerPrincipal finds all databases where a server principal exists as a database user.
+// Returns a list of database name and database user name pairs.
+func (c *Client) FindAllDatabaseUsersForServerPrincipal(ctx context.Context, serverPrincipalID string) ([]DatabaseUserInfo, error) {
+	l := ctxzap.Extract(ctx)
+	l.Debug("finding all database users for server principal", zap.String("principal_id", serverPrincipalID))
+
+	// Get list of all databases
+	databases, _, err := c.ListDatabases(ctx, &Pager{Size: 1000})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list databases: %w", err)
+	}
+
+	var dbUsers []DatabaseUserInfo
+	for _, db := range databases {
+		if c.skipUnavailableDatabases && db.StateDesc != "ONLINE" {
+			continue
+		}
+
+		// Check if user exists in this database and get the database user name
+		var dbUserName string
+		query := fmt.Sprintf(`
+		SELECT name 
+		FROM [%s].sys.database_principals 
+		WHERE sid = (SELECT sid FROM sys.server_principals WHERE principal_id = @p1)
+		AND type IN ('S', 'U', 'C', 'E', 'K')
+		`, db.Name)
+		err = c.db.GetContext(ctx, &dbUserName, query, serverPrincipalID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				// User doesn't exist in this database, skip
+				continue
+			}
+			l.Warn("error checking database user", zap.String("database", db.Name), zap.Error(err))
+			continue
+		}
+
+		// User exists in this database
+		dbUsers = append(dbUsers, DatabaseUserInfo{
+			DatabaseName: db.Name,
+			UserName:     dbUserName,
+		})
+	}
+
+	return dbUsers, nil
+}
+
 // DeleteUserFromDatabase deletes a user from a specific database.
 func (c *Client) DeleteUserFromDatabase(ctx context.Context, dbName string, userName string) error {
 	if strings.ContainsAny(dbName, "[]\"';") || strings.ContainsAny(userName, "[]\"';") {
@@ -591,12 +651,12 @@ func (c *Client) DeleteUserFromDatabase(ctx context.Context, dbName string, user
 
 // UserPermissionDetails contains detailed information about a user's permissions
 type UserPermissionDetails struct {
-	PrincipalID           string
-	PrincipalName         string
-	ServerPermissions     []string
-	ServerRoles           []string
-	DatabasePermissions   map[string][]string // database name -> permissions
-	DatabaseRoles         map[string][]string // database name -> roles
+	PrincipalID         string
+	PrincipalName       string
+	ServerPermissions   []string
+	ServerRoles         []string
+	DatabasePermissions map[string][]string // database name -> permissions
+	DatabaseRoles       map[string][]string // database name -> roles
 }
 
 // GetUserPermissionDetails returns detailed information about what permissions a user has
@@ -612,14 +672,14 @@ func (c *Client) GetUserPermissionDetails(ctx context.Context, principalID strin
 
 	details := &UserPermissionDetails{
 		PrincipalID:         principalID,
-		PrincipalName:        user.Name,
+		PrincipalName:       user.Name,
 		ServerPermissions:   []string{},
-		ServerRoles:          []string{},
+		ServerRoles:         []string{},
 		DatabasePermissions: make(map[string][]string),
-		DatabaseRoles:        make(map[string][]string),
+		DatabaseRoles:       make(map[string][]string),
 	}
 
-		// Get server-level permissions (excluding ignored permissions)
+	// Get server-level permissions (excluding ignored permissions)
 	query := `
 	SELECT perms.type, perms.state
 	FROM sys.server_permissions perms

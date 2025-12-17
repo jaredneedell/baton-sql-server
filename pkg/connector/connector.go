@@ -12,10 +12,11 @@ import (
 )
 
 type Mssqldb struct {
-	client                  *mssqldb.Client
-	appName                 string
+	client                   *mssqldb.Client
+	appName                  string
 	autoDeleteOrphanedLogins bool
 	windowsLoginEmailDomain  string
+	c1ApiClient              *c1ApiClient
 }
 
 // Resource model:
@@ -92,15 +93,15 @@ func (o *Mssqldb) Validate(ctx context.Context) (annotations.Annotations, error)
 func (o *Mssqldb) ResourceSyncers(ctx context.Context) []connectorbuilder.ResourceSyncer {
 	return []connectorbuilder.ResourceSyncer{
 		newServerSyncer(ctx, o.client),
-		newDatabaseSyncer(ctx, o.client, o.autoDeleteOrphanedLogins),
+		newDatabaseSyncer(ctx, o.client, o.autoDeleteOrphanedLogins, o.c1ApiClient),
 		newUserPrincipalSyncer(ctx, o.client, o.windowsLoginEmailDomain),
-		newServerRolePrincipalSyncer(ctx, o.client, o.autoDeleteOrphanedLogins),
-		newDatabaseRolePrincipalSyncer(ctx, o.client, o.autoDeleteOrphanedLogins),
+		newServerRolePrincipalSyncer(ctx, o.client, o.autoDeleteOrphanedLogins, o.c1ApiClient),
+		newDatabaseRolePrincipalSyncer(ctx, o.client, o.autoDeleteOrphanedLogins, o.c1ApiClient),
 		newGroupPrincipalSyncer(ctx, o.client),
 	}
 }
 
-func New(ctx context.Context, dsn string, skipUnavailableDatabases bool, appName string, autoDeleteOrphanedLogins bool, windowsLoginEmailDomain string) (*Mssqldb, error) {
+func New(ctx context.Context, dsn string, skipUnavailableDatabases bool, appName string, autoDeleteOrphanedLogins bool, windowsLoginEmailDomain string, c1ApiClientId, c1ApiClientSecret, c1AppId, c1EntitlementId string) (*Mssqldb, error) {
 	c, err := mssqldb.New(ctx, dsn, skipUnavailableDatabases)
 	if err != nil {
 		return nil, err
@@ -109,10 +110,17 @@ func New(ctx context.Context, dsn string, skipUnavailableDatabases bool, appName
 	if windowsLoginEmailDomain == "" {
 		windowsLoginEmailDomain = "rithum.com"
 	}
+
+	var c1Client *c1ApiClient
+	if c1ApiClientId != "" && c1ApiClientSecret != "" && c1AppId != "" && c1EntitlementId != "" {
+		c1Client = newC1ApiClient(c1ApiClientId, c1ApiClientSecret, c1AppId, c1EntitlementId)
+	}
+
 	return &Mssqldb{
-		client:                  c,
-		appName:                 appName,
+		client:                   c,
+		appName:                  appName,
 		autoDeleteOrphanedLogins: autoDeleteOrphanedLogins,
 		windowsLoginEmailDomain:  windowsLoginEmailDomain,
+		c1ApiClient:              c1Client,
 	}, nil
 }

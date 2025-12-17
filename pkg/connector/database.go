@@ -20,9 +20,10 @@ import (
 )
 
 type databaseSyncer struct {
-	resourceType            *v2.ResourceType
-	client                  *mssqldb.Client
+	resourceType             *v2.ResourceType
+	client                   *mssqldb.Client
 	autoDeleteOrphanedLogins bool
+	c1ApiClient              *c1ApiClient
 }
 
 func (d *databaseSyncer) ResourceType(ctx context.Context) *v2.ResourceType {
@@ -262,17 +263,19 @@ func (d *databaseSyncer) Revoke(ctx context.Context, grant *v2.Grant) (annotatio
 		return nil, err
 	}
 
-	// Check if user has no remaining permissions in this database and delete from database if enabled
-	checkAndDeleteOrphanedDatabaseUser(ctx, d.client, d.autoDeleteOrphanedLogins, grant.Principal.Id.Resource, user.Name, database.Name)
+	// Check if user has any remaining permissions (excluding connect permissions)
+	// If only connect permissions remain, revoke C1 app entitlement via API
+	checkAndRevokeC1EntitlementForDatabase(ctx, d.client, grant.Principal.Id.Resource, user.Name, database.Name, d.c1ApiClient)
 
 	l.Debug("revoked permission", zap.String("permission", permission), zap.String("user", user.Name), zap.String("database", database.Name))
 	return nil, nil
 }
 
-func newDatabaseSyncer(ctx context.Context, c *mssqldb.Client, autoDeleteOrphanedLogins bool) *databaseSyncer {
+func newDatabaseSyncer(ctx context.Context, c *mssqldb.Client, autoDeleteOrphanedLogins bool, c1ApiClient *c1ApiClient) *databaseSyncer {
 	return &databaseSyncer{
-		resourceType:            resourceTypeDatabase,
-		client:                  c,
+		resourceType:             resourceTypeDatabase,
+		client:                   c,
 		autoDeleteOrphanedLogins: autoDeleteOrphanedLogins,
+		c1ApiClient:              c1ApiClient,
 	}
 }
