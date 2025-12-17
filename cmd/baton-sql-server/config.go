@@ -6,8 +6,11 @@ import (
 
 var (
 	dsn = field.StringField("dsn",
-		field.WithDescription("The connection string for connecting to SQL Server"),
-		field.WithRequired(true))
+		field.WithDescription("The connection string for connecting to SQL Server. If not provided, db-host and db-port will be used with Windows integrated authentication."))
+	dbHost = field.StringField("db-host",
+		field.WithDescription("SQL Server hostname or IP address. Used with db-port for Windows integrated authentication (Windows only). Ignored if dsn is provided."))
+	dbPort = field.StringField("db-port",
+		field.WithDescription("SQL Server port number (default: 1433). Used with db-host for Windows integrated authentication (Windows only). Ignored if dsn is provided."))
 	skipUnavailableDatabases = field.BoolField("skip-unavailable-databases",
 		field.WithDescription("Skip databases that are unavailable (offline, restoring, etc)"))
 	appName = field.StringField("app-name",
@@ -27,5 +30,5 @@ var (
 )
 
 var cfg = field.Configuration{
-	Fields: []field.SchemaField{dsn, skipUnavailableDatabases, appName, autoDeleteOrphanedLogins, windowsLoginEmailDomain, c1ApiClientId, c1ApiClientSecret, c1AppId, c1EntitlementId},
+	Fields: []field.SchemaField{dsn, dbHost, dbPort, skipUnavailableDatabases, appName, autoDeleteOrphanedLogins, windowsLoginEmailDomain, c1ApiClientId, c1ApiClientSecret, c1AppId, c1EntitlementId},
 }

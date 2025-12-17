@@ -53,7 +53,28 @@ func main() {
 func getConnector(ctx context.Context, v *viper.Viper) (types.ConnectorServer, error) {
 	l := ctxzap.Extract(ctx)
 
-	cb, err := connector.New(ctx, v.GetString(dsn.FieldName), v.GetBool(skipUnavailableDatabases.FieldName), v.GetString(appName.FieldName), v.GetBool(autoDeleteOrphanedLogins.FieldName), v.GetString(windowsLoginEmailDomain.FieldName), v.GetString(c1ApiClientId.FieldName), v.GetString(c1ApiClientSecret.FieldName), v.GetString(c1AppId.FieldName), v.GetString(c1EntitlementId.FieldName))
+	// Build DSN from either provided DSN string or db-host/db-port with integrated auth
+	dsnValue := v.GetString(dsn.FieldName)
+	if dsnValue == "" {
+		// Use db-host and db-port for Windows integrated authentication
+		dbHostValue := v.GetString(dbHost.FieldName)
+		dbPortValue := v.GetString(dbPort.FieldName)
+
+		if dbHostValue == "" {
+			return nil, fmt.Errorf("either dsn or db-host must be provided")
+		}
+
+		// Default port to 1433 if not provided
+		if dbPortValue == "" {
+			dbPortValue = "1433"
+		}
+
+		// Build DSN with Windows integrated authentication
+		dsnValue = fmt.Sprintf("server=%s;port=%s;Integrated Security=true;Trusted_Connection=true", dbHostValue, dbPortValue)
+		l.Info("using Windows integrated authentication", zap.String("host", dbHostValue), zap.String("port", dbPortValue))
+	}
+
+	cb, err := connector.New(ctx, dsnValue, v.GetBool(skipUnavailableDatabases.FieldName), v.GetString(appName.FieldName), v.GetBool(autoDeleteOrphanedLogins.FieldName), v.GetString(windowsLoginEmailDomain.FieldName), v.GetString(c1ApiClientId.FieldName), v.GetString(c1ApiClientSecret.FieldName), v.GetString(c1AppId.FieldName), v.GetString(c1EntitlementId.FieldName))
 	if err != nil {
 		l.Error("error creating connector", zap.Error(err))
 		return nil, err
