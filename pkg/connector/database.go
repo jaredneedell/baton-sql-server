@@ -20,10 +20,9 @@ import (
 )
 
 type databaseSyncer struct {
-	resourceType             *v2.ResourceType
-	client                   *mssqldb.Client
-	autoDeleteOrphanedLogins bool
-	c1ApiClient              *c1ApiClient
+	resourceType *v2.ResourceType
+	client       *mssqldb.Client
+	c1ApiClient  *c1ApiClient
 }
 
 func (d *databaseSyncer) ResourceType(ctx context.Context) *v2.ResourceType {
@@ -271,11 +270,10 @@ func (d *databaseSyncer) Revoke(ctx context.Context, grant *v2.Grant) (annotatio
 	return nil, nil
 }
 
-func newDatabaseSyncer(ctx context.Context, c *mssqldb.Client, autoDeleteOrphanedLogins bool, c1ApiClient *c1ApiClient) *databaseSyncer {
+func newDatabaseSyncer(ctx context.Context, c *mssqldb.Client, c1ApiClient *c1ApiClient) *databaseSyncer {
 	return &databaseSyncer{
-		resourceType:             resourceTypeDatabase,
-		client:                   c,
-		autoDeleteOrphanedLogins: autoDeleteOrphanedLogins,
-		c1ApiClient:              c1ApiClient,
+		resourceType: resourceTypeDatabase,
+		client:       c,
+		c1ApiClient:  c1ApiClient,
 	}
 }

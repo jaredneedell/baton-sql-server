@@ -12,11 +12,10 @@ import (
 )
 
 type Mssqldb struct {
-	client                   *mssqldb.Client
-	appName                  string
-	autoDeleteOrphanedLogins bool
-	windowsLoginEmailDomain  string
-	c1ApiClient              *c1ApiClient
+	client                  *mssqldb.Client
+	appName                 string
+	windowsLoginEmailDomain string
+	c1ApiClient             *c1ApiClient
 }
 
 // Resource model:
@@ -93,15 +92,15 @@ func (o *Mssqldb) Validate(ctx context.Context) (annotations.Annotations, error)
 func (o *Mssqldb) ResourceSyncers(ctx context.Context) []connectorbuilder.ResourceSyncer {
 	return []connectorbuilder.ResourceSyncer{
 		newServerSyncer(ctx, o.client),
-		newDatabaseSyncer(ctx, o.client, o.autoDeleteOrphanedLogins, o.c1ApiClient),
+		newDatabaseSyncer(ctx, o.client, o.c1ApiClient),
 		newUserPrincipalSyncer(ctx, o.client, o.windowsLoginEmailDomain),
-		newServerRolePrincipalSyncer(ctx, o.client, o.autoDeleteOrphanedLogins, o.c1ApiClient),
-		newDatabaseRolePrincipalSyncer(ctx, o.client, o.autoDeleteOrphanedLogins, o.c1ApiClient),
+		newServerRolePrincipalSyncer(ctx, o.client, o.c1ApiClient),
+		newDatabaseRolePrincipalSyncer(ctx, o.client, o.c1ApiClient),
 		newGroupPrincipalSyncer(ctx, o.client),
 	}
 }
 
-func New(ctx context.Context, dsn string, skipUnavailableDatabases bool, appName string, autoDeleteOrphanedLogins bool, windowsLoginEmailDomain string, c1ApiClientId, c1ApiClientSecret, c1AppId, c1EntitlementId string) (*Mssqldb, error) {
+func New(ctx context.Context, dsn string, skipUnavailableDatabases bool, appName string, windowsLoginEmailDomain string, c1ApiClientId, c1ApiClientSecret, c1AppId, c1EntitlementId string) (*Mssqldb, error) {
 	c, err := mssqldb.New(ctx, dsn, skipUnavailableDatabases)
 	if err != nil {
 		return nil, err
@@ -113,10 +112,9 @@ func New(ctx context.Context, dsn string, skipUnavailableDatabases bool, appName
 	}
 
 	return &Mssqldb{
-		client:                   c,
-		appName:                  appName,
-		autoDeleteOrphanedLogins: autoDeleteOrphanedLogins,
-		windowsLoginEmailDomain:  windowsLoginEmailDomain,
-		c1ApiClient:              c1Client,
+		client:                  c,
+		appName:                 appName,
+		windowsLoginEmailDomain: windowsLoginEmailDomain,
+		c1ApiClient:             c1Client,
 	}, nil
 }

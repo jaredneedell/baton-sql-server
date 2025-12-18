@@ -74,7 +74,7 @@ func getConnector(ctx context.Context, v *viper.Viper) (types.ConnectorServer, e
 		l.Info("using Windows integrated authentication", zap.String("host", dbHostValue), zap.String("port", dbPortValue))
 	}
 
-	cb, err := connector.New(ctx, dsnValue, v.GetBool(skipUnavailableDatabases.FieldName), v.GetString(appName.FieldName), v.GetBool(autoDeleteOrphanedLogins.FieldName), v.GetString(windowsLoginEmailDomain.FieldName), v.GetString(c1ApiClientId.FieldName), v.GetString(c1ApiClientSecret.FieldName), v.GetString(c1AppId.FieldName), v.GetString(c1EntitlementId.FieldName))
+	cb, err := connector.New(ctx, dsnValue, v.GetBool(skipUnavailableDatabases.FieldName), v.GetString(appName.FieldName), v.GetString(windowsLoginEmailDomain.FieldName), v.GetString(c1ApiClientId.FieldName), v.GetString(c1ApiClientSecret.FieldName), v.GetString(c1AppId.FieldName), v.GetString(c1EntitlementId.FieldName))
 	if err != nil {
 		l.Error("error creating connector", zap.Error(err))
 		return nil, err

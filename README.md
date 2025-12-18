@@ -114,16 +114,7 @@ Environment variable: `BATON_WINDOWS_LOGIN_EMAIL_DOMAIN`
 
 This converts Windows logins like `DOMAIN\first.last` to `first.last@example.com`. If not provided, email conversion is disabled.
 
-### Auto-Delete Orphaned Logins
-Automatically delete server logins when they lose all meaningful permissions after a revoke operation:
-```bash
---auto-delete-orphaned-logins
-```
-Environment variable: `BATON_AUTO_DELETE_ORPHANED_LOGINS=true`
-
-This feature requires ConductorOne API credentials (see below) to properly remove the user from the app entitlement.
-
-### ConductorOne API Integration
+### ConductorOne API Integration - Automatic Entitlement Revocation
 Enable automatic user cleanup by providing ConductorOne API credentials:
 ```bash
 --c1-api-client-id "your-client-id" \
@@ -138,7 +129,26 @@ Environment variables:
 - `BATON_C1_APP_ID`
 - `BATON_C1_ENTITLEMENT_ID`
 
-When all four values are provided, the connector will automatically revoke the user's app entitlement when they lose all meaningful permissions.
+**What it does:**
+When all four credentials are provided, the connector automatically monitors permission changes and revokes a user's app entitlement in ConductorOne when they lose all meaningful SQL Server permissions. This keeps ConductorOne's access records in sync with actual SQL Server permissions.
+
+**How it works:**
+1. **Trigger**: After revoking permissions from a user (via database roles, server roles, or direct permissions)
+2. **Check**: The connector checks if the user has any remaining "meaningful" permissions
+3. **Ignored Permissions**: Basic connection permissions are NOT considered meaningful:
+   - `COSQ` (Connect SQL)
+   - `CADB` (Connect Any Database)  
+   - `CO` (Connect to Database)
+4. **Action**: If only connection permissions (or no permissions) remain → Automatically revokes the user's ConductorOne app entitlement via API call
+5. **Important**: This does NOT delete the SQL Server login itself - it only removes the user from the ConductorOne app entitlement
+
+**Purpose:**
+Prevents "orphaned" users who appear to have access in ConductorOne but actually have no meaningful permissions in SQL Server.
+
+**How to get these values:**
+1. **Client ID & Secret**: Create an OAuth client in ConductorOne with appropriate permissions
+2. **App ID**: The ID of this SQL Server app/connector in ConductorOne
+3. **Entitlement ID**: The ID of the "App Access" (or similar) entitlement that grants users access to this SQL Server instance
 
 ## Provisioning Mode
 
@@ -185,11 +195,10 @@ Available Commands:
 
 Flags:
       --app-name string                      Custom app name to display in the connector metadata ($BATON_APP_NAME)
-      --auto-delete-orphaned-logins          Automatically delete user logins from the server when they have no remaining permissions ($BATON_AUTO_DELETE_ORPHANED_LOGINS)
-      --c1-api-client-id string              ConductorOne API client ID for removing user from app entitlement after deletion ($BATON_C1_API_CLIENT_ID)
-      --c1-api-client-secret string          ConductorOne API client secret for removing user from app entitlement after deletion ($BATON_C1_API_CLIENT_SECRET)
-      --c1-app-id string                     ConductorOne app ID to remove user from entitlement after deletion ($BATON_C1_APP_ID)
-      --c1-entitlement-id string             ConductorOne entitlement ID to remove user from after deletion ($BATON_C1_ENTITLEMENT_ID)
+      --c1-api-client-id string              ConductorOne API client ID for app entitlement management ($BATON_C1_API_CLIENT_ID)
+      --c1-api-client-secret string          ConductorOne API client secret for app entitlement management ($BATON_C1_API_CLIENT_SECRET)
+      --c1-app-id string                     ConductorOne app ID for app entitlement management ($BATON_C1_APP_ID)
+      --c1-entitlement-id string             ConductorOne entitlement ID for app entitlement management ($BATON_C1_ENTITLEMENT_ID)
       --client-id string                     The client ID used to authenticate with ConductorOne ($BATON_CLIENT_ID)
       --client-secret string                 The client secret used to authenticate with ConductorOne ($BATON_CLIENT_SECRET)
       --db-host string                       SQL Server hostname or IP address. Used with db-port for Windows integrated authentication ($BATON_DB_HOST)

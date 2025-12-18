@@ -22,10 +22,9 @@ import (
 )
 
 type databaseRolePrincipalSyncer struct {
-	resourceType             *v2.ResourceType
-	client                   *mssqldb.Client
-	autoDeleteOrphanedLogins bool
-	c1ApiClient              *c1ApiClient
+	resourceType *v2.ResourceType
+	client       *mssqldb.Client
+	c1ApiClient  *c1ApiClient
 }
 
 func (d *databaseRolePrincipalSyncer) ResourceType(ctx context.Context) *v2.ResourceType {
@@ -341,11 +340,10 @@ func (d *databaseRolePrincipalSyncer) Revoke(ctx context.Context, grant *v2.Gran
 	return nil, nil
 }
 
-func newDatabaseRolePrincipalSyncer(ctx context.Context, c *mssqldb.Client, autoDeleteOrphanedLogins bool, c1ApiClient *c1ApiClient) *databaseRolePrincipalSyncer {
+func newDatabaseRolePrincipalSyncer(ctx context.Context, c *mssqldb.Client, c1ApiClient *c1ApiClient) *databaseRolePrincipalSyncer {
 	return &databaseRolePrincipalSyncer{
-		resourceType:             resourceTypeDatabaseRole,
-		client:                   c,
-		autoDeleteOrphanedLogins: autoDeleteOrphanedLogins,
-		c1ApiClient:              c1ApiClient,
+		resourceType: resourceTypeDatabaseRole,
+		client:       c,
+		c1ApiClient:  c1ApiClient,
 	}
 }
