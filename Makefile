@@ -10,7 +10,7 @@ endif
 
 .PHONY: build
 build:
-	go build -o ${OUTPUT_PATH} ./cmd/baton-sql-server
+	go build -ldflags="-s -w" -o ${OUTPUT_PATH} ./cmd/baton-sql-server
 
 .PHONY: update-deps
 update-deps:

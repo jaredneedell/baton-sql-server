@@ -18,7 +18,7 @@ var (
 	autoDeleteOrphanedLogins = field.BoolField("auto-delete-orphaned-logins",
 		field.WithDescription("Automatically delete user logins from the server when they have no remaining permissions after a revoke operation"))
 	windowsLoginEmailDomain = field.StringField("windows-login-email-domain",
-		field.WithDescription("Email domain to use when converting Windows login usernames to email format (e.g., 'rithum.com'). Defaults to 'rithum.com'"))
+		field.WithDescription("Email domain to use when converting Windows login usernames to email format (e.g., 'example.com'). If not provided, email conversion will not be performed."))
 	c1ApiClientId = field.StringField("c1-api-client-id",
 		field.WithDescription("ConductorOne API client ID for removing user from app entitlement after deletion. Optional - if not provided, entitlement removal will not be performed."))
 	c1ApiClientSecret = field.StringField("c1-api-client-secret",

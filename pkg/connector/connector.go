@@ -106,10 +106,6 @@ func New(ctx context.Context, dsn string, skipUnavailableDatabases bool, appName
 	if err != nil {
 		return nil, err
 	}
-	// Default to rithum.com if not specified
-	if windowsLoginEmailDomain == "" {
-		windowsLoginEmailDomain = "rithum.com"
-	}
 
 	var c1Client *c1ApiClient
 	if c1ApiClientId != "" && c1ApiClientSecret != "" && c1AppId != "" && c1EntitlementId != "" {

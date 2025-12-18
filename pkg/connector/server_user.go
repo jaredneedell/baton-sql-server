@@ -370,8 +370,13 @@ func generateStrongPassword() string {
 //   - "DOMAIN\first.last" -> "first.last@{emailDomain}"
 //   - "first.last" -> "first.last@{emailDomain}"
 //
-// Returns empty string if the format doesn't match expected patterns.
+// Returns empty string if the format doesn't match expected patterns or if no email domain is configured.
 func (d *userPrincipalSyncer) parseWindowsLoginToEmail(username string) string {
+	// If no email domain is configured, don't attempt to create emails
+	if d.windowsLoginEmailDomain == "" {
+		return ""
+	}
+
 	emailDomain := "@" + d.windowsLoginEmailDomain
 
 	// Remove domain prefix if present (DOMAIN\username)
@@ -393,10 +398,6 @@ func (d *userPrincipalSyncer) parseWindowsLoginToEmail(username string) string {
 }
 
 func newUserPrincipalSyncer(ctx context.Context, c *mssqldb.Client, windowsLoginEmailDomain string) *userPrincipalSyncer {
-	// Default to rithum.com if not specified
-	if windowsLoginEmailDomain == "" {
-		windowsLoginEmailDomain = "rithum.com"
-	}
 	return &userPrincipalSyncer{
 		resourceType:            resourceTypeUser,
 		client:                  c,
